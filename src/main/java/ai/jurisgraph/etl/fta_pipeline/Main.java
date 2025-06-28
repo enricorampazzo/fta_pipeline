@@ -41,24 +41,38 @@ public class Main implements CommandLineRunner {
 
     @Override
     public void run(String... args) throws Exception {
-        //PagePdfDocumentReader pdfReader = new PagePdfDocumentReader("Cabinet-Decision-No-142-of-2024-on-Top-up-Tax-on-MNEs.pdf");
         model = model.replace("/", "-");
         String format = "png";
-        String pdf = "Cabinet-Decision-No-142-of-2024-on-Top-up-Tax-on-MNEs.pdf";
+        String documentName = "Cabinet-Decision-No-142-of-2024-on-Top-up-Tax-on-MNEs";
+        String pdf = "%s.pdf".formatted(documentName);
         PDFParser pdfParser = new PDFParser(new RandomAccessReadBuffer(new DefaultResourceLoader().getResource(pdf).getInputStream()));
         String filenameTemplate = "page_%d-%d_dpi.%s";
         List<Media> imageMedia = null;
         int dpi = 450;
         MimeType imageMt = MimeType.valueOf("image/png");
         int numberOfPages = 0;
+        Path documentFolder = Path.of("output", documentName);
+        Path renderedPagesFolder = documentFolder.resolve("renderedPages");
+        Path markdownPages = documentFolder.resolve("markdownPages");
+        Path outputFile = documentFolder.resolve("%s-model_%s-dpi_%d-%s.md".formatted(documentName, model, dpi, format));
+        if(Files.notExists(documentFolder)){
+            Files.createDirectories(documentFolder);
+        }
+        if(Files.notExists(renderedPagesFolder)){
+           Files.createDirectories(renderedPagesFolder);
+        }
+        if(Files.notExists(markdownPages)){
+            Files.createDirectories(markdownPages);
+        }
         try (PDDocument pdfDocument = pdfParser.parse()) {
             PDFRenderer pdfRenderer = new PDFRenderer(pdfDocument);
             numberOfPages = pdfDocument.getNumberOfPages();
+
             imageMedia = IntStream.range(0, numberOfPages).boxed().toList().stream().map(pageNum -> {
                 BufferedImage image = null;
                 try {
                     image = pdfRenderer.renderImageWithDPI(pageNum, dpi, ImageType.RGB);
-                    Path path = Path.of(String.format(filenameTemplate, pageNum + 1, dpi,format));
+                    Path path = renderedPagesFolder.resolve(Path.of(String.format(filenameTemplate, pageNum + 1, dpi,format)));
                     File destination = null;
                     if(Files.notExists(path)) {
                         destination = Files.createFile(path).toFile();
@@ -77,11 +91,14 @@ public class Main implements CommandLineRunner {
             }).toList();
             String prompt = """
                     Convert the law articles contained in the images to markdown. Headers, lists and tables must be
-                    converted to markdown. Mathematical formulas must be converted to markdown-friendly LaTeX.
+                    converted to markdown.
+                    Mathematical formulas must be converted to markdown-friendly LaTeX.
                     For ease of processing, please only return markdown without any reasoning or comments.
+                    If the image contains a list of definitions, convert them to a markdown table where one column is
+                    the term defined and the other is the explanation of the term.
                     """;
             imageMedia.forEach(m -> {
-                Path markDownPageFile = Path.of(m.getName().replace("."+format, ".md"));
+                Path markDownPageFile = markdownPages.resolve(m.getName().replace("."+format, ".md"));
 
                 try {
                     if (Files.exists(markDownPageFile) && Files.size(markDownPageFile)>0) {
@@ -91,14 +108,14 @@ public class Main implements CommandLineRunner {
                 } catch (IOException e) {
                     throw new RuntimeException(e);
                 }
-                try (BufferedWriter br = new BufferedWriter(new FileWriter(markDownPageFile.toFile()))) {
+                try (BufferedWriter writer = new BufferedWriter(new FileWriter(markDownPageFile.toFile()))) {
                     System.out.printf("Now processing %s%n", m.getName());
-                    String response = Optional.ofNullable(chatClient.prompt(new Prompt(UserMessage.builder().text(prompt).media(m)
-                            .build())).call().content()).orElse("");
+                    String response = Optional.ofNullable(chatClient.prompt(new Prompt(UserMessage.builder()
+                            .text(prompt).media(m).build())).call().content()).orElse("");
                     System.out.print(response);
-                    br.write(markdownPattern.matcher(response).replaceAll(""));
-                    br.write(System.lineSeparator());
-                    br.flush();
+                    writer.write(markdownPattern.matcher(response).replaceAll(""));
+                    writer.write(System.lineSeparator());
+                    writer.flush();
                     Thread.sleep(Duration.of(2, ChronoUnit.SECONDS));
                 } catch (IOException | InterruptedException e) {
                     throw new RuntimeException(e);
@@ -106,12 +123,12 @@ public class Main implements CommandLineRunner {
 
             });
         }
-        Path finalOutput = Path.of("%s-output-model_%s-dpi_%d-%s.md".formatted(pdf.replace(".pdf", ".md"), model, dpi, format));
-        if(!finalOutput.toFile().exists()){
-            try(BufferedWriter bw = new BufferedWriter(new FileWriter(finalOutput.toFile()))) {
-                IntStream.rangeClosed(1, numberOfPages).forEach(n -> {
+
+        if(!outputFile.toFile().exists() || Files.size(outputFile) == 0){
+            try(BufferedWriter bw = new BufferedWriter(new FileWriter(outputFile.toFile()))) {
+                IntStream.range(0, numberOfPages).forEach(n -> {
                     try {
-                        bw.write(Files.readString(Path.of("page_%d-%d_dpi.md".formatted(n, dpi))));
+                        bw.write(Files.readString(markdownPages.resolve(Path.of("page_%d-%d_dpi.md".formatted(n, dpi)))));
                         bw.flush();
                     } catch (IOException e) {
                         throw new RuntimeException(e);
